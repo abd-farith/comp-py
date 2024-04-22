@@ -3,9 +3,8 @@ import dlib
 import cv2
 import numpy as np
 from scipy.spatial import distance
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from flask_pymongo import PyMongo
+import streamlit as st
+from pymongo import MongoClient
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
@@ -29,6 +28,7 @@ def extract_face_encodings(image_path):
         face_encodings.append(np.array(face_descriptor))
 
     return face_encodings
+
 def compare_faces(image_path, company_id):
     results = []
     face_encodings = extract_face_encodings(image_path)
@@ -41,7 +41,11 @@ def compare_faces(image_path, company_id):
 
     query_encoding = face_encodings[0]
 
-    company_collection = mongo.db[str(company_id)]
+    # MongoDB connection and query logic
+    client = MongoClient("mongodb+srv://alpha:alpha@cluster1.elvzeic.mongodb.net/Company")
+    db = client.Company
+    company_collection = db[str(company_id)]
+
     for face in company_collection.find():
         for descriptor in face['descriptions']:
             distance_score = distance.euclidean(query_encoding, descriptor)
@@ -58,7 +62,10 @@ def upload_labeled_images(images, company_id, user_id, username):
         if len(face_encodings) == 1:
             descriptions.append(face_encodings[0].tolist())
 
-    company_collection = mongo.db[str(company_id)]
+    # MongoDB connection and update logic
+    client = MongoClient("mongodb+srv://alpha:alpha@cluster1.elvzeic.mongodb.net/Company")
+    db = client.Company
+    company_collection = db[str(company_id)]
     existing_user = company_collection.find_one({'user_id': user_id})
 
     if existing_user:
@@ -73,82 +80,43 @@ def upload_labeled_images(images, company_id, user_id, username):
             'descriptions': descriptions
         })
 
-app = Flask(__name__)
-CORS(app)
+# Streamlit app starts here
 
-app.config['MONGO_URI'] = 'mongodb+srv://alpha:alpha@cluster1.elvzeic.mongodb.net/Company'
-mongo = PyMongo(app)
+st.title("Face Recognition System")
 
-UPLOAD_FOLDER = 'uploads'
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+option = st.sidebar.selectbox("Select Action", ["Check Face", "Post Face"])
 
-@app.route("/post-face", methods=['POST'])
-def post_face():
-    try:
-        company_id = request.form['company_id']
-        user_id = request.form['user_id']
-        username = request.form['username']
+if option == "Check Face":
+    st.subheader("Check Face")
+    company_id = st.text_input("Enter Company ID:")
+    file_to_check = st.file_uploader("Upload an image to check:", type=["jpg", "jpeg", "png"])
 
-        if company_id not in ['00001', '00004', '00025']:
-            return jsonify({'error': 'Company model is not available. Please choose a company from 00001, 00004, 00025'}), 400
+    if st.button("Check"):
+        if file_to_check is not None:
+            file_path = os.path.join("uploads", file_to_check.name)
+            with open(file_path, "wb") as f:
+                f.write(file_to_check.read())
+            result = compare_faces(file_path, company_id)
+            st.write(result)
+        else:
+            st.error("Please upload an image to check.")
 
-        if 'File1' not in request.files or 'File2' not in request.files or 'File3' not in request.files:
-            return jsonify({'error': 'Please upload all three image files.'}), 400
+elif option == "Post Face":
+    st.subheader("Post Face")
+    company_id = st.text_input("Enter Company ID:")
+    user_id = st.text_input("Enter User ID:")
+    username = st.text_input("Enter Username:")
+    uploaded_files = st.file_uploader("Upload three images:", accept_multiple_files=True)
 
-        file1 = request.files['File1']
-        file2 = request.files['File2']
-        file3 = request.files['File3']
-
-        if company_id and user_id and username and file1 and file2 and file3:
+    if st.button("Upload"):
+        if uploaded_files is not None and len(uploaded_files) == 3:
             file_paths = []
-            for file in [file1, file2, file3]:
-                if file.filename == '':
-                    return jsonify({'error': 'One of the files has no selected file.'}), 400
-                if file:
-                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-                    file.save(file_path)
-                    file_paths.append(file_path)
+            for file in uploaded_files:
+                file_path = os.path.join("uploads", file.name)
+                with open(file_path, "wb") as f:
+                    f.write(file.read())
+                file_paths.append(file_path)
             upload_labeled_images(file_paths, company_id, user_id, username)
-            return jsonify({'message': 'Face model updated successfully'})
+            st.success("Images uploaded successfully.")
         else:
-            return jsonify({'error': 'Incomplete form data provided.'}), 400
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route("/check-face", methods=['POST'])
-def check_face():
-    try:
-        company_id = request.form['company_id']
-
-        if company_id not in ['00001', '00004', '00025']:
-            return jsonify({'error': 'Company model is not available. Please choose a company from 00001, 00004, 00025'}), 400
-
-        if 'File1' not in request.files:
-            return jsonify({'error': 'Please upload an image file to check.'}), 400
-
-        file1 = request.files['File1']
-
-        if file1.filename == '':
-            return jsonify({'error': 'No selected file.'}), 400
-
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], file1.filename)
-        file1.save(file_path)
-
-        result = compare_faces(file_path, company_id)
-
-        if isinstance(result, str):
-            return jsonify({'result': result})
-        elif len(result) == 0:
-            return jsonify({'result': 'Face not recognized.'})
-        elif len(result) > 1:
-            return jsonify({'result': 'Multiple faces found'})
-        else:
-            return jsonify({'result': result[0]})
-    except Exception as e:
-        print("Check face error:", e)
-        return jsonify({'error': str(e)}), 500
-
-if __name__ == "__main__":
-    if not os.path.exists(UPLOAD_FOLDER):
-        os.makedirs(UPLOAD_FOLDER)
-    app.run(debug=True)
+            st.error("Please upload three images.")
