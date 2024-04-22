@@ -8,7 +8,7 @@ from flask_cors import CORS
 from flask_pymongo import PyMongo
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 face_detector = dlib.get_frontal_face_detector()
 
@@ -29,6 +29,7 @@ def extract_face_encodings(image_path):
         face_encodings.append(np.array(face_descriptor))
 
     return face_encodings
+
 def compare_faces(image_path, company_id):
     results = []
     face_encodings = extract_face_encodings(image_path)
@@ -58,7 +59,9 @@ def upload_labeled_images(images, company_id, user_id, username):
         if len(face_encodings) == 1:
             descriptions.append(face_encodings[0].tolist())
 
-    company_collection = mongo.db[str(company_id)]
+    db = mongo.db
+    company_collection = db[str(company_id)]
+
     existing_user = company_collection.find_one({'user_id': user_id})
 
     if existing_user:
@@ -89,8 +92,10 @@ def post_face():
         user_id = request.form['user_id']
         username = request.form['username']
 
-        if company_id not in ['00001', '00004', '00025']:
-            return jsonify({'error': 'Company model is not available. Please choose a company from 00001, 00004, 00025'}), 400
+        existing_collections = mongo.db.list_collection_names()
+        if str(company_id) not in existing_collections:
+            # Create a new collection if the company ID does not exist
+            mongo.db.create_collection(str(company_id))
 
         if 'File1' not in request.files or 'File2' not in request.files or 'File3' not in request.files:
             return jsonify({'error': 'Please upload all three image files.'}), 400
@@ -108,6 +113,7 @@ def post_face():
                     file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
                     file.save(file_path)
                     file_paths.append(file_path)
+
             upload_labeled_images(file_paths, company_id, user_id, username)
             return jsonify({'message': 'Face model updated successfully'})
         else:
@@ -115,13 +121,15 @@ def post_face():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
 @app.route("/check-face", methods=['POST'])
 def check_face():
     try:
         company_id = request.form['company_id']
 
-        if company_id not in ['00001', '00004', '00025']:
-            return jsonify({'error': 'Company model is not available. Please choose a company from 00001, 00004, 00025'}), 400
+        existing_collections = mongo.db.list_collection_names()
+        if str(company_id) not in existing_collections:
+            return jsonify({'error': f'Company model for {company_id} is not available. Please choose a company from {existing_collections}'}), 400
 
         if 'File1' not in request.files:
             return jsonify({'error': 'Please upload an image file to check.'}), 400
